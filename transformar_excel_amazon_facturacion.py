@@ -1,39 +1,33 @@
 import streamlit as st
 import pandas as pd
 import io
+import csv
 
-# Configuración de la página
-st.set_page_config(page_title="Amazon Excel Transformer", layout="wide")
+st.set_page_config(page_title="Amazon Universal Transformer", layout="wide")
 
-st.title("🔄 Amazon Data Transformer (Versión Excel)")
-st.markdown("""
-Sube el fichero de Amazon en formato **.xlsx** para evitar errores de columnas movidas.
-""")
+st.title("🔄 Amazon Data Transformer")
+st.markdown("Sube el fichero de Amazon (ya sea .xlsx o .csv). La app detectará el formato automáticamente.")
 
-def transform_excel_data(df):
-    # 1. Limpiar nombres de columnas por si acaso (quitar espacios o comillas)
+def transform_logic(df):
+    # Limpiar nombres de columnas (quitar comillas y espacios)
     df.columns = [str(col).strip().replace('"', '') for col in df.columns]
     
-    # 2. Definición de las columnas de precio para calcular el IMPORTE TOTAL
-    # Amazon en Excel ya suele traer los números como formato numérico
+    # Columnas para el cálculo del total
     price_cols = [
-        'OUR_PRICE Tax Inclusive Selling Price',
-        'OUR_PRICE Tax Inclusive Promo Amount',
-        'SHIPPING Tax Inclusive Selling Price',
-        'SHIPPING Tax Inclusive Promo Amount',
-        'GIFTWRAP Tax Inclusive Selling Price',
-        'GIFTWRAP Tax Inclusive Promo Amount'
+        'OUR_PRICE Tax Inclusive Selling Price', 'OUR_PRICE Tax Inclusive Promo Amount',
+        'SHIPPING Tax Inclusive Selling Price', 'SHIPPING Tax Inclusive Promo Amount',
+        'GIFTWRAP Tax Inclusive Selling Price', 'GIFTWRAP Tax Inclusive Promo Amount'
     ]
     
-    # Asegurar que son números (por si vienen como texto)
+    # Convertir a numérico
     for col in price_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
     
-    # Calcular Importe Total
+    # Calcular TOTAL
     df['IMPORTE TOTAL'] = df[price_cols].sum(axis=1)
 
-    # 3. Mapeo de columnas según tu necesidad
+    # Mapeo final
     mapping = {
         'Order Date': 'Order Date',
         'Transaction Type': 'Transaction Type',
@@ -51,43 +45,62 @@ def transform_excel_data(df):
         'Ship To Country': 'Ship To Country'
     }
 
-    # Crear dataframe final
-    df_final = pd.DataFrame()
-    for original, final in mapping.items():
-        if original in df.columns:
-            df_final[final] = df[original]
+    res_df = pd.DataFrame()
+    for ori, dest in mapping.items():
+        if ori in df.columns:
+            res_df[dest] = df[ori]
         else:
-            df_final[final] = ""
+            res_df[dest] = ""
+    return res_df
 
-    return df_final
-
-# --- Interfaz de Usuario ---
-uploaded_file = st.file_uploader("Elige el archivo EXCEL de Amazon (.xlsx)", type="xlsx")
+uploaded_file = st.file_uploader("Sube el archivo aquí", type=["xlsx", "csv", "txt"])
 
 if uploaded_file is not None:
-    try:
-        # Leer el Excel
-        df_original = pd.read_excel(uploaded_file)
-        
-        st.success("Archivo leído correctamente.")
-        
-        # Procesar
-        df_transformed = transform_excel_data(df_original)
+    df = None
+    
+    # INTENTO 1: Leer como Excel Real
+    if uploaded_file.name.endswith('.xlsx'):
+        try:
+            df = pd.read_excel(uploaded_file, engine='openpyxl')
+        except Exception:
+            st.warning("No parece un Excel real. Intentando leer como archivo de texto...")
 
-        st.subheader("📊 Vista previa del fichero final")
-        st.dataframe(df_transformed.head(10))
+    # INTENTO 2: Si el primero falla o es CSV, leer como Texto/CSV con limpieza
+    if df is None:
+        try:
+            uploaded_file.seek(0) # Volver al inicio del archivo
+            raw_content = uploaded_file.read().decode("utf-8")
+            
+            # Limpiar el formato extraño de Amazon (comillas envolventes)
+            cleaned_lines = []
+            for line in raw_content.splitlines():
+                line = line.strip()
+                if line.startswith('"') and line.endswith('"'):
+                    line = line[1:-1]
+                line = line.replace('""', '"')
+                cleaned_lines.append(line)
+            
+            df = pd.read_csv(io.StringIO("\n".join(cleaned_lines)), sep=',', quoting=csv.QUOTE_MINIMAL)
+        except Exception as e:
+            st.error(f"Error al leer el archivo: {e}")
 
-        # Botón para descargar de nuevo en Excel (es mejor para tus compañeros)
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-            df_transformed.to_excel(writer, index=False, sheet_name='Facturacion')
-        
-        st.download_button(
-            label="📥 Descargar Resultado en Excel",
-            data=buffer.getvalue(),
-            file_name="amazon_final_procesado.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+    # Si logramos cargar el DataFrame, lo transformamos
+    if df is not None:
+        try:
+            df_final = transform_logic(df)
+            st.success(f"¡Hecho! Procesadas {len(df_final)} filas.")
+            st.dataframe(df_final.head(10))
 
-    except Exception as e:
-        st.error(f"Error al procesar el Excel: {e}")
+            # Descarga siempre en Excel para evitar problemas de comas
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                df_final.to_excel(writer, index=False, sheet_name='Amazon_Procesado')
+            
+            st.download_button(
+                label="📥 Descargar Resultado en Excel",
+                data=output.getvalue(),
+                file_name="amazon_final.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        except Exception as e:
+            st.error(f"Error en la transformación de datos: {e}")
