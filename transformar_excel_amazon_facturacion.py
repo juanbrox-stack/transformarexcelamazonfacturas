@@ -3,31 +3,58 @@ import pandas as pd
 import io
 import csv
 
-st.set_page_config(page_title="Amazon Universal Transformer", layout="wide")
+st.set_page_config(page_title="Amazon Multi-Sheet Transformer", layout="wide")
 
-st.title("🔄 Amazon Data Transformer")
-st.markdown("Sube el fichero de Amazon (ya sea .xlsx o .csv). La app detectará el formato automáticamente.")
+st.title("🔄 Amazon Transformer: Pestañas por Tax Scheme")
+st.markdown("El archivo final tendrá una pestaña diferente para cada tipo de **Tax Reporting Scheme**.")
+
+def clean_and_load(uploaded_file):
+    """Detecta el formato y limpia las comillas de Amazon."""
+    df = None
+    # Intento como Excel
+    if uploaded_file.name.endswith('.xlsx'):
+        try:
+            df = pd.read_excel(uploaded_file, engine='openpyxl')
+        except:
+            pass
+    
+    # Intento como Texto (CSV/TXT) si falla Excel
+    if df is None:
+        uploaded_file.seek(0)
+        try:
+            raw = uploaded_file.read().decode("utf-8")
+        except UnicodeDecodeError:
+            uploaded_file.seek(0)
+            raw = uploaded_file.read().decode("latin-1")
+            
+        cleaned = []
+        for line in raw.splitlines():
+            line = line.strip()
+            if line.startswith('"') and line.endswith('"'):
+                line = line[1:-1]
+            line = line.replace('""', '"')
+            cleaned.append(line)
+        df = pd.read_csv(io.StringIO("\n".join(cleaned)), sep=',', quoting=csv.QUOTE_MINIMAL)
+    
+    return df
 
 def transform_logic(df):
-    # Limpiar nombres de columnas (quitar comillas y espacios)
+    # Limpieza de nombres de columnas
     df.columns = [str(col).strip().replace('"', '') for col in df.columns]
     
-    # Columnas para el cálculo del total
+    # Cálculo de Importe
     price_cols = [
         'OUR_PRICE Tax Inclusive Selling Price', 'OUR_PRICE Tax Inclusive Promo Amount',
         'SHIPPING Tax Inclusive Selling Price', 'SHIPPING Tax Inclusive Promo Amount',
         'GIFTWRAP Tax Inclusive Selling Price', 'GIFTWRAP Tax Inclusive Promo Amount'
     ]
-    
-    # Convertir a numérico
     for col in price_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
     
-    # Calcular TOTAL
     df['IMPORTE TOTAL'] = df[price_cols].sum(axis=1)
 
-    # Mapeo final
+    # Mapeo de columnas solicitado
     mapping = {
         'Order Date': 'Order Date',
         'Transaction Type': 'Transaction Type',
@@ -53,54 +80,36 @@ def transform_logic(df):
             res_df[dest] = ""
     return res_df
 
-uploaded_file = st.file_uploader("Sube el archivo aquí", type=["xlsx", "csv", "txt"])
+uploaded_file = st.file_uploader("Sube el fichero original de Amazon", type=["xlsx", "csv", "txt"])
 
-if uploaded_file is not None:
-    df = None
+if uploaded_file:
+    df_raw = clean_and_load(uploaded_file)
     
-    # INTENTO 1: Leer como Excel Real
-    if uploaded_file.name.endswith('.xlsx'):
-        try:
-            df = pd.read_excel(uploaded_file, engine='openpyxl')
-        except Exception:
-            st.warning("No parece un Excel real. Intentando leer como archivo de texto...")
+    if df_raw is not None:
+        df_final = transform_logic(df_raw)
+        
+        # --- Lógica de Pestañas ---
+        # Reemplazamos valores nulos por "VACIO" para poder agrupar
+        df_final['Tax Reporting Scheme'] = df_final['Tax Reporting Scheme'].fillna('VACIO').replace('', 'VACIO')
+        grupos = df_final.groupby('Tax Reporting Scheme')
 
-    # INTENTO 2: Si el primero falla o es CSV, leer como Texto/CSV con limpieza
-    if df is None:
-        try:
-            uploaded_file.seek(0) # Volver al inicio del archivo
-            raw_content = uploaded_file.read().decode("utf-8")
-            
-            # Limpiar el formato extraño de Amazon (comillas envolventes)
-            cleaned_lines = []
-            for line in raw_content.splitlines():
-                line = line.strip()
-                if line.startswith('"') and line.endswith('"'):
-                    line = line[1:-1]
-                line = line.replace('""', '"')
-                cleaned_lines.append(line)
-            
-            df = pd.read_csv(io.StringIO("\n".join(cleaned_lines)), sep=',', quoting=csv.QUOTE_MINIMAL)
-        except Exception as e:
-            st.error(f"Error al leer el archivo: {e}")
+        st.success(f"Procesadas {len(df_final)} líneas en total.")
+        
+        # Mostrar resumen en la web
+        for name, group in grupos:
+            st.write(f"Pestaña **{name}**: {len(group)} registros")
 
-    # Si logramos cargar el DataFrame, lo transformamos
-    if df is not None:
-        try:
-            df_final = transform_logic(df)
-            st.success(f"¡Hecho! Procesadas {len(df_final)} filas.")
-            st.dataframe(df_final.head(10))
-
-            # Descarga siempre en Excel para evitar problemas de comas
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                df_final.to_excel(writer, index=False, sheet_name='Amazon_Procesado')
-            
-            st.download_button(
-                label="📥 Descargar Resultado en Excel",
-                data=output.getvalue(),
-                file_name="amazon_final.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-        except Exception as e:
-            st.error(f"Error en la transformación de datos: {e}")
+        # Crear el archivo Excel con múltiples pestañas
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            for name, group in grupos:
+                # El nombre de la pestaña no puede tener más de 31 caracteres
+                sheet_name = str(name)[:31]
+                group.to_excel(writer, index=False, sheet_name=sheet_name)
+        
+        st.download_button(
+            label="📥 Descargar Excel con Pestañas",
+            data=output.getvalue(),
+            file_name="Amazon_Facturacion_Organizado.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
