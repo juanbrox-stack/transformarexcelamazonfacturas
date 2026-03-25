@@ -7,16 +7,31 @@ st.set_page_config(page_title="Amazon Data Transformer", layout="wide")
 
 st.title("🔄 Transformador de Facturación Amazon")
 st.markdown("""
-Sube el fichero CSV original de Amazon y descarga la versión procesada lista para contabilidad.
+Sube el fichero CSV original de Amazon. Esta versión corrige el error de formato de comillas dobles.
 """)
 
+def clean_amazon_csv(file_content):
+    """
+    Amazon envuelve cada fila en comillas extras. 
+    Esta función limpia el texto para que sea un CSV estándar.
+    """
+    lines = file_content.decode("utf-8").splitlines()
+    cleaned_lines = []
+    for line in lines:
+        line = line.strip()
+        # Eliminar comilla inicial y final si existen
+        if line.startswith('"') and line.endswith('"'):
+            line = line[1:-1]
+        # Reemplazar las dobles comillas internas ("") por comillas simples (")
+        line = line.replace('""', '"')
+        cleaned_lines.append(line)
+    return "\n".join(cleaned_lines)
+
 def transform_data(df):
-    # 1. Limpieza de nombres de columnas (eliminar comillas dobles extras si existen)
-    df.columns = [col.replace('"', '') for col in df.columns]
+    # 1. Asegurar que los nombres de columnas no tengan espacios extra
+    df.columns = [col.strip() for col in df.columns]
     
     # 2. Definición de las columnas de precio para calcular el IMPORTE TOTAL
-    # Sumamos el precio y las promociones (que suelen venir en negativo)
-    # Columnas: OUR_PRICE, SHIPPING y GIFTWRAP (Tax Inclusive)
     price_cols = [
         'OUR_PRICE Tax Inclusive Selling Price',
         'OUR_PRICE Tax Inclusive Promo Amount',
@@ -26,15 +41,15 @@ def transform_data(df):
         'GIFTWRAP Tax Inclusive Promo Amount'
     ]
     
-    # Asegurarnos de que son numéricas
+    # Convertir a numérico (Amazon usa punto como decimal en estos ficheros)
     for col in price_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
     
-    # Calcular Importe Total
+    # Calcular Importe Total (Suma de precios y promociones)
     df['IMPORTE TOTAL'] = df[price_cols].sum(axis=1)
 
-    # 3. Mapeo de columnas según el formato final solicitado
+    # 3. Mapeo de columnas solicitado
     mapping = {
         'Order Date': 'Order Date',
         'Transaction Type': 'Transaction Type',
@@ -52,16 +67,12 @@ def transform_data(df):
         'Ship To Country': 'Ship To Country'
     }
 
-    # Seleccionar solo las columnas que existen en el dataframe y renombrarlas
-    # Si alguna columna falta en el origen, se crea vacía
-    final_cols = []
     df_final = pd.DataFrame()
-    
     for original, final in mapping.items():
         if original in df.columns:
             df_final[final] = df[original]
         else:
-            df_final[final] = ""
+            df_final[final] = "" # Crear columna vacía si no existe en origen
 
     return df_final
 
@@ -70,16 +81,16 @@ uploaded_file = st.file_uploader("Elige el archivo CSV de Amazon", type="csv")
 
 if uploaded_file is not None:
     try:
-        # Leer el archivo. Amazon suele usar codificación especial o delimitadores según el marketplace
-        # Probamos con coma, si falla el usuario verá el error
-        df_original = pd.read_csv(uploaded_file, quoting=0)
+        # Paso 1: Leer el contenido bruto y limpiarlo
+        raw_content = uploaded_file.read()
+        cleaned_csv_str = clean_amazon_csv(raw_content)
         
-        st.success("Archivo cargado correctamente.")
+        # Paso 2: Cargar en Pandas
+        df_original = pd.read_csv(io.StringIO(cleaned_csv_str))
         
-        with st.expander("Ver datos originales (primeras 5 filas)"):
-            st.write(df_original.head())
-
-        # Transformación
+        st.success("Archivo procesado y limpiado con éxito.")
+        
+        # Paso 3: Transformar
         df_transformed = transform_data(df_original)
 
         st.subheader("📊 Vista previa del fichero final")
@@ -93,10 +104,10 @@ if uploaded_file is not None:
         st.download_button(
             label="📥 Descargar CSV Transformado",
             data=csv_data,
-            file_name="amazon_facturacion_final.csv",
+            file_name="amazon_procesado.csv",
             mime="text/csv",
         )
 
     except Exception as e:
-        st.error(f"Error al procesar el archivo: {e}")
-        st.info("Asegúrate de que el archivo es el CSV original descargado de Amazon Seller Central.")
+        st.error(f"Error crítico al procesar el archivo: {e}")
+        st.info("Asegúrate de que estás subiendo el archivo CSV sin haberlo modificado antes en Excel.")
