@@ -1,51 +1,39 @@
 import streamlit as st
 import pandas as pd
 import io
-import csv
 
-st.set_page_config(page_title="Amazon Converter PRO", layout="wide")
+# Configuración de la página
+st.set_page_config(page_title="Amazon Excel Transformer", layout="wide")
 
-st.title("🔄 Transformador de Facturación Amazon")
-st.info("Esta versión corrige el desplazamiento de columnas y descuadres.")
+st.title("🔄 Amazon Data Transformer (Versión Excel)")
+st.markdown("""
+Sube el fichero de Amazon en formato **.xlsx** para evitar errores de columnas movidas.
+""")
 
-def process_amazon_file(uploaded_file):
-    # Leer el contenido bruto
-    raw_text = uploaded_file.read().decode("utf-8")
+def transform_excel_data(df):
+    # 1. Limpiar nombres de columnas por si acaso (quitar espacios o comillas)
+    df.columns = [str(col).strip().replace('"', '') for col in df.columns]
     
-    # 1. Limpieza de las filas "envueltas" en comillas
-    cleaned_lines = []
-    for line in raw_text.splitlines():
-        line = line.strip()
-        if line.startswith('"') and line.endswith('"'):
-            line = line[1:-1] # Quitar comillas de los extremos
-        line = line.replace('""', '"') # Convertir dobles comillas en simples
-        cleaned_lines.append(line)
-    
-    # 2. Convertir a DataFrame usando el motor de python para mayor precisión
-    final_io = io.StringIO("\n".join(cleaned_lines))
-    df = pd.read_csv(final_io, sep=',', quoting=csv.QUOTE_MINIMAL)
-    
-    # Limpiar posibles espacios en los nombres de columnas
-    df.columns = [c.strip().replace('"', '') for c in df.columns]
-    return df
-
-def transform_logic(df):
-    # Columnas necesarias para el cálculo del total
-    cols_money = [
-        'OUR_PRICE Tax Inclusive Selling Price', 'OUR_PRICE Tax Inclusive Promo Amount',
-        'SHIPPING Tax Inclusive Selling Price', 'SHIPPING Tax Inclusive Promo Amount',
-        'GIFTWRAP Tax Inclusive Selling Price', 'GIFTWRAP Tax Inclusive Promo Amount'
+    # 2. Definición de las columnas de precio para calcular el IMPORTE TOTAL
+    # Amazon en Excel ya suele traer los números como formato numérico
+    price_cols = [
+        'OUR_PRICE Tax Inclusive Selling Price',
+        'OUR_PRICE Tax Inclusive Promo Amount',
+        'SHIPPING Tax Inclusive Selling Price',
+        'SHIPPING Tax Inclusive Promo Amount',
+        'GIFTWRAP Tax Inclusive Selling Price',
+        'GIFTWRAP Tax Inclusive Promo Amount'
     ]
     
-    # Convertir a numérico asegurando que el punto es el decimal
-    for col in cols_money:
+    # Asegurar que son números (por si vienen como texto)
+    for col in price_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
     
-    # Cálculo del IMPORTE TOTAL
-    df['IMPORTE TOTAL'] = df[cols_money].sum(axis=1)
+    # Calcular Importe Total
+    df['IMPORTE TOTAL'] = df[price_cols].sum(axis=1)
 
-    # Diccionario de Mapeo Exacto (Origen: Destino)
+    # 3. Mapeo de columnas según tu necesidad
     mapping = {
         'Order Date': 'Order Date',
         'Transaction Type': 'Transaction Type',
@@ -63,38 +51,43 @@ def transform_logic(df):
         'Ship To Country': 'Ship To Country'
     }
 
-    # Crear el dataframe final manteniendo solo las columnas del mapeo
-    res_df = pd.DataFrame()
-    for ori, dest in mapping.items():
-        if ori in df.columns:
-            res_df[dest] = df[ori]
+    # Crear dataframe final
+    df_final = pd.DataFrame()
+    for original, final in mapping.items():
+        if original in df.columns:
+            df_final[final] = df[original]
         else:
-            res_df[dest] = "" # Columna vacía si no existe
-            
-    return res_df
+            df_final[final] = ""
 
-# --- UI ---
-file = st.file_uploader("Sube el archivo CSV", type=["csv"])
+    return df_final
 
-if file:
+# --- Interfaz de Usuario ---
+uploaded_file = st.file_uploader("Elige el archivo EXCEL de Amazon (.xlsx)", type="xlsx")
+
+if uploaded_file is not None:
     try:
-        df_raw = process_amazon_file(file)
-        df_final = transform_logic(df_raw)
+        # Leer el Excel
+        df_original = pd.read_excel(uploaded_file)
         
-        st.success(f"Procesadas {len(df_final)} filas.")
+        st.success("Archivo leído correctamente.")
         
-        st.subheader("Vista previa del resultado")
-        st.dataframe(df_final.head(10))
-        
-        # Preparar descarga
-        csv_buffer = io.StringIO()
-        df_final.to_csv(csv_buffer, index=False, sep=';', encoding='utf-8-sig') # Usamos ; para que Excel lo abra bien
+        # Procesar
+        df_transformed = transform_excel_data(df_original)
+
+        st.subheader("📊 Vista previa del fichero final")
+        st.dataframe(df_transformed.head(10))
+
+        # Botón para descargar de nuevo en Excel (es mejor para tus compañeros)
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+            df_transformed.to_excel(writer, index=False, sheet_name='Facturacion')
         
         st.download_button(
-            label="📥 Descargar CSV Final (Formato Excel)",
-            data=csv_buffer.getvalue(),
-            file_name="Facturacion_Amazon_Final.csv",
-            mime="text/csv"
+            label="📥 Descargar Resultado en Excel",
+            data=buffer.getvalue(),
+            file_name="amazon_final_procesado.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+
     except Exception as e:
-        st.error(f"Error en el procesado: {e}")
+        st.error(f"Error al procesar el Excel: {e}")
