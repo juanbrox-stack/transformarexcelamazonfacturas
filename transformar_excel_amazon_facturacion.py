@@ -5,7 +5,7 @@ import csv
 
 st.set_page_config(page_title="Amazon Multi-Sheet Transformer", layout="wide")
 
-st.title("🔄 Amazon Transformer: Pestañas por Tax Scheme")
+st.title("🔄 Amazon Transformer File")
 st.markdown("El archivo final tendrá una pestaña diferente para cada tipo de **Tax Reporting Scheme**.")
 
 def clean_and_load(uploaded_file):
