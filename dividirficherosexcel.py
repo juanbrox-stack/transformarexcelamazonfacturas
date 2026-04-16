@@ -3,60 +3,70 @@ import pandas as pd
 import io
 import zipfile
 
-# Configuración de la página
-st.set_page_config(page_title="Divisor de Excel Pro", page_icon="✂️")
+st.set_page_config(page_title="Herramienta de División Excel", page_icon="✂️")
 
-st.title("✂️ Divisor de Excel con Encabezados")
-st.info("Este proceso mantendrá la fila 1 (nombres de columnas) en todos los archivos generados.")
+st.title("✂️ Procesador y Divisor de Excel")
 
-# 1. Subida del archivo
-uploaded_file = st.file_uploader("Sube tu archivo .xlsx o .xls", type=["xlsx", "xls"])
+# Sidebar para elegir la funcionalidad
+st.sidebar.header("Configuración")
+modo = st.sidebar.radio(
+    "Selecciona el modo de división:",
+    ("Por Filas (Fragmentos)", "Por Columnas (Específico por SKU)")
+)
+
+uploaded_file = st.file_uploader("Sube tu archivo .xlsx", type=["xlsx"])
 
 if uploaded_file is not None:
-    # Cargamos el Excel completo en memoria
     df = pd.read_excel(uploaded_file)
     total_rows = len(df)
-    columnas = df.columns.tolist() # Guardamos los nombres de las columnas
+    total_cols = len(df.columns)
     
-    st.write(f"✅ Archivo detectado con **{total_rows}** filas y **{len(columnas)}** columnas.")
+    st.write(f"📊 Archivo cargado: **{total_rows}** filas y **{total_cols}** columnas.")
 
-    # 2. Parámetros de división
-    rows_per_file = st.number_input(
-        "Número de filas de datos por archivo:", 
-        min_value=1, 
-        max_value=total_rows, 
-        value=500
-    )
+    # --- LÓGICA MODO FILAS ---
+    if modo == "Por Filas (Fragmentos)":
+        st.subheader("División por número de filas")
+        rows_per_file = st.number_input("Filas por archivo:", min_value=1, value=500)
+        
+        if st.button("Generar Archivos por Filas"):
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, "w") as zf:
+                for i in range(0, total_rows, rows_per_file):
+                    chunk = df.iloc[i : i + rows_per_file]
+                    idx = (i // rows_per_file) + 1
+                    
+                    output = io.BytesIO()
+                    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                        chunk.to_excel(writer, index=False)
+                    zf.writestr(f"division_filas_{idx}.xlsx", output.getvalue())
+            
+            st.download_button("📥 Descargar ZIP (Filas)", zip_buffer.getvalue(), "excel_filas.zip")
 
-    if st.button("Generar Archivos"):
-        # Creamos el contenedor para el ZIP
-        zip_buffer = io.BytesIO()
+    # --- LÓGICA MODO COLUMNAS ---
+    else:
+        st.subheader("División por columnas (SKU + Columna)")
+        st.info("Se creará un archivo por cada columna, manteniendo siempre la primera columna (SKUs).")
         
-        with zipfile.ZipFile(zip_buffer, "w") as zf:
-            # Calculamos cuántos archivos saldrán
-            for i in range(0, total_rows, rows_per_file):
-                # Seleccionamos el bloque de filas actual
-                chunk = df.iloc[i : i + rows_per_file]
-                
-                # Nombre del archivo individual
-                chunk_idx = (i // rows_per_file) + 1
-                filename = f"parte_{chunk_idx}.xlsx"
-                
-                # Guardamos el bloque en un buffer de Excel
-                buffer_excel = io.BytesIO()
-                with pd.ExcelWriter(buffer_excel, engine='xlsxwriter') as writer:
-                    # 'header=True' asegura que la fila 1 se incluya siempre
-                    chunk.to_excel(writer, index=False, header=True, sheet_name='Datos')
-                
-                # Metemos el Excel en el ZIP
-                zf.writestr(filename, buffer_excel.getvalue())
+        col_sku = df.columns[0]
+        otras_columnas = df.columns[1:]
         
-        st.success(f"¡Listo! Se han creado {chunk_idx} archivos.")
-        
-        # 3. Botón para descargar el resultado
-        st.download_button(
-            label="📥 Descargar todos los archivos (ZIP)",
-            data=zip_buffer.getvalue(),
-            file_name="excel_dividido.zip",
-            mime="application/zip"
-        )
+        st.write(f"Columna fija: **{col_sku}**")
+        st.write(f"Se generarán **{len(otras_columnas)}** archivos.")
+
+        if st.button("Generar Archivos por Columnas"):
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, "w") as zf:
+                for col_name in otras_columnas:
+                    # Seleccionamos la columna de SKU (0) y la columna actual
+                    columnas_a_guardar = [col_sku, col_name]
+                    df_temp = df[columnas_a_guardar]
+                    
+                    output = io.BytesIO()
+                    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                        df_temp.to_excel(writer, index=False)
+                    
+                    # Usamos el nombre de la columna para el nombre del archivo
+                    safe_name = "".join([c for c in col_name if c.isalnum() or c in (' ', '_')]).strip()
+                    zf.writestr(f"columna_{safe_name}.xlsx", output.getvalue())
+            
+            st.download_button("📥 Descargar ZIP (Columnas)", zip_buffer.getvalue(), "excel_columnas.zip")
